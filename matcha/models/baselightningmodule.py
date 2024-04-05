@@ -57,6 +57,7 @@ class BaseLightningClass(LightningModule, ABC):
         x, x_lengths = batch["x"], batch["x_lengths"]
         y, y_lengths = batch["y"], batch["y_lengths"]
         spks = batch["spks"]
+        duration, duration_lengths = batch["duration"], batch["duration_lengths"]
 
         dur_loss, prior_loss, diff_loss = self(
             x=x,
@@ -64,6 +65,8 @@ class BaseLightningClass(LightningModule, ABC):
             y=y,
             y_lengths=y_lengths,
             spks=spks,
+            duration=duration,
+            duration_lengths=duration_lengths,
             out_size=self.out_size,
         )
         return {

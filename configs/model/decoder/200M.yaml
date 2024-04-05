@@ -1,0 +1,7 @@
+channels: [1024, 1024]
+dropout: 0.05
+attention_head_dim: 128
+n_blocks: 2
+num_mid_blocks: 2
+num_heads: 2
+act_fn: snakebeta

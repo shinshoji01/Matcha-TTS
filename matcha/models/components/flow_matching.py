@@ -4,9 +4,9 @@ import torch
 import torch.nn.functional as F
 
 from matcha.models.components.decoder import Decoder
-from matcha.utils.pylogger import get_pylogger
+# from matcha.utils.pylogger import get_pylogger
 
-log = get_pylogger(__name__)
+# log = get_pylogger(__name__)
 
 
 class BASECFM(torch.nn.Module, ABC):
@@ -30,7 +30,7 @@ class BASECFM(torch.nn.Module, ABC):
         self.estimator = None
 
     @torch.inference_mode()
-    def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None):
+    def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None, cond2=None, random_seed=None):
         """Forward diffusion
 
         Args:
@@ -48,11 +48,13 @@ class BASECFM(torch.nn.Module, ABC):
             sample: generated mel-spectrogram
                 shape: (batch_size, n_feats, mel_timesteps)
         """
+        if random_seed is not None:
+            torch.manual_seed(random_seed)
         z = torch.randn_like(mu) * temperature
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device)
-        return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond)
+        return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond, cond2=cond2)
 
-    def solve_euler(self, x, t_span, mu, mask, spks, cond):
+    def solve_euler(self, x, t_span, mu, mask, spks, cond, cond2):
         """
         Fixed euler solver for ODEs.
         Args:
@@ -67,6 +69,11 @@ class BASECFM(torch.nn.Module, ABC):
                 shape: (batch_size, spk_emb_dim)
             cond: Not used but kept for future purposes
         """
+        if cond2 is not None:
+            mu_unc, gscale = cond2
+            ifCFG = True
+        else:
+            ifCFG = False
         t, _, dt = t_span[0], t_span[-1], t_span[1] - t_span[0]
 
         # I am storing this because I can later plot it by putting a debugger here and saving it to a file
@@ -75,6 +82,10 @@ class BASECFM(torch.nn.Module, ABC):
 
         for step in range(1, len(t_span)):
             dphi_dt = self.estimator(x, mask, mu, t, spks, cond)
+            if ifCFG:
+                dphi_dt_unc = self.estimator(x, mask, mu_unc, t, spks, cond)
+                scale = gscale* torch.norm(dphi_dt_unc)/ torch.norm(dphi_dt)
+                dphi_dt = torch.lerp(dphi_dt_unc, dphi_dt, scale)
 
             x = x + dt * dphi_dt
             t = t + dt
@@ -112,7 +123,7 @@ class BASECFM(torch.nn.Module, ABC):
         y = (1 - (1 - self.sigma_min) * t) * z + t * x1
         u = x1 - (1 - self.sigma_min) * z
 
-        loss = F.mse_loss(self.estimator(y, mask, mu, t.squeeze(), spks), u, reduction="sum") / (
+        loss = F.mse_loss(self.estimator(y, mask, mu, t.squeeze(), spks, cond=cond), u, reduction="sum") / (
             torch.sum(mask) * u.shape[1]
         )
         return loss, y

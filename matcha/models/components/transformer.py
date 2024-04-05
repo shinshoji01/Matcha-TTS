@@ -263,6 +263,9 @@ class BasicTransformerBlock(nn.Module):
 
         cross_attention_kwargs = cross_attention_kwargs if cross_attention_kwargs is not None else {}
 
+        
+        attention_mask = attention_mask.unsqueeze(1).expand(-1, attention_mask.shape[-1], -1)
+        # print(attention_mask.shape)
         attn_output = self.attn1(
             norm_hidden_states,
             encoder_hidden_states=encoder_hidden_states if self.only_cross_attention else None,

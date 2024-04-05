@@ -5,12 +5,16 @@ import torch
 import torchaudio as ta
 from lightning import LightningDataModule
 from torch.utils.data.dataloader import DataLoader
+import numpy as np
 
 from matcha.text import text_to_sequence
 from matcha.utils.audio import mel_spectrogram
 from matcha.utils.model import fix_len_compatibility, normalize
 from matcha.utils.utils import intersperse
 
+# import sys
+# sys.path.append("/work/Git/")
+# from FastSpeech2.text import text_to_sequence
 
 def parse_filelist(filelist_path, split_char="|"):
     with open(filelist_path, encoding="utf-8") as f:
@@ -39,6 +43,7 @@ class TextMelDataModule(LightningDataModule):
         f_max,
         data_statistics,
         seed,
+        preprocessed_dir,
     ):
         super().__init__()
 
@@ -68,6 +73,7 @@ class TextMelDataModule(LightningDataModule):
             self.hparams.f_max,
             self.hparams.data_statistics,
             self.hparams.seed,
+            self.hparams.preprocessed_dir,
         )
         self.validset = TextMelDataset(  # pylint: disable=attribute-defined-outside-init
             self.hparams.valid_filelist_path,
@@ -83,6 +89,7 @@ class TextMelDataModule(LightningDataModule):
             self.hparams.f_max,
             self.hparams.data_statistics,
             self.hparams.seed,
+            self.hparams.preprocessed_dir,
         )
 
     def train_dataloader(self):
@@ -134,6 +141,7 @@ class TextMelDataset(torch.utils.data.Dataset):
         f_max=8000,
         data_parameters=None,
         seed=None,
+        preprocessed_dir="./"
     ):
         self.filepaths_and_text = parse_filelist(filelist_path)
         self.n_spks = n_spks
@@ -152,42 +160,36 @@ class TextMelDataset(torch.utils.data.Dataset):
             self.data_parameters = {"mel_mean": 0, "mel_std": 1}
         random.seed(seed)
         random.shuffle(self.filepaths_and_text)
+        self.preprocessed_dir = preprocessed_dir
 
     def get_datapoint(self, filepath_and_text):
-        if self.n_spks > 1:
-            filepath, spk, text = (
-                filepath_and_text[0],
-                int(filepath_and_text[1]),
-                filepath_and_text[2],
-            )
-        else:
-            filepath, text = filepath_and_text[0], filepath_and_text[1]
-            spk = None
+        filepath, spk, text = (
+            filepath_and_text[0],
+            int(filepath_and_text[1]),
+            filepath_and_text[2],
+        )
+        filepath, spk, text, _ = filepath_and_text
+        spk = int(spk)-11
 
         text = self.get_text(text, add_blank=self.add_blank)
         mel = self.get_mel(filepath)
+        duration = self.get_duration(filepath)
 
-        return {"x": text, "y": mel, "spk": spk}
+        return {"x": text, "y": mel, "spk": spk, "duration": duration}
+    
+    def get_duration(self, filepath):
+        path = self.preprocessed_dir + f"duration/{filepath[:4]}-duration-" + filepath + ".npy"
+        duration = torch.Tensor(np.load(path))
+        return duration
 
     def get_mel(self, filepath):
-        audio, sr = ta.load(filepath)
-        assert sr == self.sample_rate
-        mel = mel_spectrogram(
-            audio,
-            self.n_fft,
-            self.n_mels,
-            self.sample_rate,
-            self.hop_length,
-            self.win_length,
-            self.f_min,
-            self.f_max,
-            center=False,
-        ).squeeze()
+        path = self.preprocessed_dir + f"mel/{filepath[:4]}-mel-" + filepath + ".npy"
+        mel = torch.Tensor(np.load(path)).T
         mel = normalize(mel, self.data_parameters["mel_mean"], self.data_parameters["mel_std"])
         return mel
 
     def get_text(self, text, add_blank=True):
-        text_norm = text_to_sequence(text, self.cleaners)
+        text_norm = text_to_sequence(text, ["english_cleaners"])
         if self.add_blank:
             text_norm = intersperse(text_norm, 0)
         text_norm = torch.IntTensor(text_norm)
@@ -210,22 +212,27 @@ class TextMelBatchCollate:
         y_max_length = max([item["y"].shape[-1] for item in batch])
         y_max_length = fix_len_compatibility(y_max_length)
         x_max_length = max([item["x"].shape[-1] for item in batch])
+        duration_max_length = max([item["duration"].shape[-1] for item in batch])
         n_feats = batch[0]["y"].shape[-2]
 
         y = torch.zeros((B, n_feats, y_max_length), dtype=torch.float32)
         x = torch.zeros((B, x_max_length), dtype=torch.long)
-        y_lengths, x_lengths = [], []
+        duration = torch.zeros((B, duration_max_length), dtype=torch.long)
+        y_lengths, x_lengths, duration_lengths = [], [], []
         spks = []
         for i, item in enumerate(batch):
-            y_, x_ = item["y"], item["x"]
+            y_, x_, duration_ = item["y"], item["x"], item["duration"]
             y_lengths.append(y_.shape[-1])
             x_lengths.append(x_.shape[-1])
+            duration_lengths.append(duration_.shape[-1])
             y[i, :, : y_.shape[-1]] = y_
             x[i, : x_.shape[-1]] = x_
+            duration[i, : duration_.shape[-1]] = duration_
             spks.append(item["spk"])
 
         y_lengths = torch.tensor(y_lengths, dtype=torch.long)
         x_lengths = torch.tensor(x_lengths, dtype=torch.long)
+        duration_lengths = torch.tensor(duration_lengths, dtype=torch.long)
         spks = torch.tensor(spks, dtype=torch.long) if self.n_spks > 1 else None
 
-        return {"x": x, "x_lengths": x_lengths, "y": y, "y_lengths": y_lengths, "spks": spks}
+        return {"x": x, "x_lengths": x_lengths, "y": y, "y_lengths": y_lengths, "spks": spks, "duration": duration, "duration_lengths": duration_lengths}

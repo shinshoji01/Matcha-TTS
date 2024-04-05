@@ -380,15 +380,22 @@ class Decoder(nn.Module):
 
         t = self.time_embeddings(t)
         t = self.time_mlp(t)
+        
+        if (cond is not None) and t.shape==cond.shape:
+            t += cond
 
         x = pack([x, mu], "b * t")[0]
 
         if spks is not None:
             spks = repeat(spks, "b c -> b c t", t=x.shape[-1])
             x = pack([x, spks], "b * t")[0]
-
+            
         hiddens = []
         masks = [mask]
+        
+        if (cond is not None) and x.shape==cond.shape:
+            x = x + cond
+            
         for resnet, transformer_blocks, downsample in self.down_blocks:
             mask_down = masks[-1]
             x = resnet(x, mask_down, t)
